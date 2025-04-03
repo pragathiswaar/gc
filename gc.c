@@ -262,6 +262,11 @@ void* gc_malloc_static(GarbageCollector* gc, size_t size, void(*dtor)(void*)){
     return ptr;
 }
 
+void* gc_make_static(GarbageCollector* gc, void* ptr){
+    gc_make_root(gc, ptr);
+    return ptr;
+}
+
 void* gc_malloc_ext(GarbageCollector* gc, size_t size, void(*dtor)(void*)){
     return gc_allocate(gc, 0, size, dtor);
 }
@@ -334,6 +339,83 @@ void gc_resume(GarbageCollector* gc){
     gc->paused = false;
 }
 
+void gc_mark_alloc(GarbageCollector* gc, void* ptr){
+    Allocation* alloc = gc_allocation_map_get(gc->allocs, ptr);
+    if (alloc && !(alloc->tag & GC_TAG_MARK)) {
+        alloc->tag |= GC_TAG_MARK;
+        for (char* p = (char*) alloc->ptr;p <= (char*) alloc->ptr + alloc->size - PTRSIZE;++p) {
+            gc_mark_alloc(gc, *(void**)p);
+        }
+    }
+}
+
+void gc_mark_stack(GarbageCollector* gc){
+    void *tos = __builtin_frame_address(0);
+    void *bos = gc->bos;
+    for (char* p = (char*) tos; p <= (char*) bos - PTRSIZE; ++p) {
+        gc_mark_alloc(gc, *(void**)p);
+    }
+}
+
+void gc_mark_roots(GarbageCollector* gc){
+    for (size_t i = 0; i < gc->allocs->capacity; ++i) {
+        Allocation* chunk = gc->allocs->allocs[i];
+        while (chunk) {
+            if (chunk->tag & GC_TAG_ROOT) {
+                gc_mark_alloc(gc, chunk->ptr);
+            }
+            chunk = chunk->next;
+        }
+    }
+}
+
+void gc_mark(GarbageCollector* gc){
+    gc_mark_roots(gc);
+    void (*volatile _mark_stack)(GarbageCollector*) = gc_mark_stack;
+    jmp_buf ctx;
+    memset(&ctx, 0, sizeof(jmp_buf));
+    setjmp(ctx);
+    _mark_stack(gc);
+}
+
+size_t gc_sweep(GarbageCollector* gc){
+    size_t total = 0;
+    for (size_t i = 0; i < gc->allocs->capacity; ++i) {
+        Allocation* chunk = gc->allocs->allocs[i];
+        Allocation* next = NULL;
+        while (chunk) {
+            if (chunk->tag & GC_TAG_MARK) {
+                chunk->tag &= ~GC_TAG_MARK;
+                chunk = chunk->next;
+            } else {
+                total += chunk->size;
+                if (chunk->dtor) {
+                    chunk->dtor(chunk->ptr);
+                }
+                free(chunk->ptr);
+                next = chunk->next;
+                gc_allocation_map_remove(gc->allocs, chunk->ptr, false);
+                chunk = next;
+            }
+        }
+    }
+    gc_allocation_map_resize_to_fit(gc->allocs);
+    return total;
+}
+
+
+void gc_unroot_roots(GarbageCollector* gc){
+    for (size_t i = 0; i < gc->allocs->capacity; ++i) {
+        Allocation* chunk = gc->allocs->allocs[i];
+        while (chunk) {
+            if (chunk->tag & GC_TAG_ROOT) {
+                chunk->tag &= ~GC_TAG_ROOT;
+            }
+            chunk = chunk->next;
+        }
+    }
+}
+
 size_t gc_stop(GarbageCollector* gc){
     gc_unroot_roots(gc);
     size_t collected = gc_sweep(gc);
@@ -349,9 +431,5 @@ size_t gc_run(GarbageCollector* gc){
 char* gc_strdup (GarbageCollector* gc, const char* s){
     size_t len = strlen(s) + 1;
     void *new = gc_malloc(gc, len);
-
-    if (new == NULL) {
-        return NULL;
-    }
     return (char*) memcpy(new, s, len);
 }
