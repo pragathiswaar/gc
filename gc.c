@@ -431,5 +431,10 @@ size_t gc_run(GarbageCollector* gc){
 char* gc_strdup (GarbageCollector* gc, const char* s){
     size_t len = strlen(s) + 1;
     void *new = gc_malloc(gc, len);
+
+    if (new == NULL) {
+        return NULL;
+    }
+    
     return (char*) memcpy(new, s, len);
 }
