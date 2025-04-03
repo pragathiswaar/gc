@@ -31,4 +31,9 @@ void* gc_calloc_ext(GarbageCollector* gc,size_t count, size_t size, void (*dtor)
 void* gc_realloc(GarbageCollector* gc,void* ptr,size_t size);
 void gc_free(GarbageCollector* gc,void* ptr);
 
+void* gc_make_static(GarbageCollector* gc,void* ptr);
+
+char* gc_strdup (GarbageCollector* gc,const char* s);
+
+
 #endif
